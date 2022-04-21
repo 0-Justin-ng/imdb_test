@@ -1,5 +1,6 @@
 
 import os
+import time
 # Gets html
 from requests import get
 # Parses HTML files
@@ -8,69 +9,127 @@ from bs4 import BeautifulSoup
 import pandas as pd
 import numpy as np
 
-headers = {'Accept-Language': 'en-US, en;q=0.5'}
-url = 'https://www.imdb.com/search/title/?groups=top_1000&ref_=adv_prv'
 
-# URL = the site you want to scrape from.
-# Headers = specifies what formate to scrape. 
-results = get(url, headers=headers)
 
-# Parses all the html
-parsed_html = BeautifulSoup(results.text, 'html.parser')
+def make_url():
+    '''
+    Returns a list of urls for each IMDB page for BeautifulSoup to parse.
+    '''
 
-# Looks for all div with the class lister-item mode-advanced which stores
-# the movie details. Div is a container in html. 
-movie_div = parsed_html.find_all('div', class_='lister-item mode-advanced')
+    url_list = ['https://www.imdb.com/search/title/?groups=top_1000']
 
-test_movie = movie_div[0]
+    index = 51
+    while index != 1001:
+        template_url = f'https://www.imdb.com/search/title/?groups=top_1000&start={index}&ref_=adv_nxt'
+        url_list.append(template_url)
+        index += 50
+
+    return url_list
+
+
+
+def parse_html(url_list):
+    '''
+    Returns a list of soup objects for each parsed page.
+    '''
+    soup_list = []
+    headers = {'Accept-Language': 'en-US, en;q=0.5'}
+
+    # URL = the site you want to scrape from.
+    # Headers = specifies what formate to scrape. 
+    for url in url_list:
+        response = get(url, headers=headers)
+        # Parses all the html
+        parsed_html = BeautifulSoup(response.text, 'html.parser')
+        # Looks for all div with the class lister-item mode-advanced which stores
+        # the movie details. Div is a container in html. 
+        movie_div = parsed_html.find_all('div', class_='lister-item mode-advanced')
+        soup_list.append(movie_div)
+
+    return soup_list
+
 
 
 def clean_html(container):
     '''
-    Takes in a parsed html of imdb movie info. Turns it into a list of strings.
-    Cleans up the parsed html by removing spaces, empty strings and \n. 
+    Takes in a parsed html of imdb movie info. 
+    Cleans up the parsed html by removing spaces, empty strings, \n and converts certain 
+    strings to floats and ints. 
     Returns a dictionary of necessary information.
     '''
-    container_text = container.text.split('\n')
-    clean_container = [x for x in container_text if x not in ['', ' ']]
+    # Contains title and year of release
+    
+    title = container.find('h3', class_='lister-item-header').find('a').text
+    print(title)
+    year = container.find(
+        'span', class_='lister-item-year'
+        ).text.replace('(', '').replace(')','')
 
-    title = clean_container[1]
-    year_of_release = clean_container[2].replace('(', '')
-    year_of_release = year_of_release.replace(')', '')
-    runtime = clean_container[5].replace('min', '')
-    genre = clean_container[7].strip()
-    imdb_rating = clean_container[8]
-    metascore = clean_container[25].strip()
-    description = clean_container[28]
+    runtime = int(
+        container.find(
+            'span', class_='runtime'
+            ).text.replace(' min', '')
+        ) if container.find('span', class_='runtime') else None
 
-    index = 30
-    value = clean_container[index]
-    director = ''
-    while value != '| ':
-        director = director + value
-        index +=1
-        value = clean_container[index]
-  
+    genre = container.find(
+            'span', class_='genre'
+            ).text.replace('\n', '').strip()
 
-    index = 33
-    value = clean_container[index]
-    stars = ''
-    while value not in ['Votes:']:
-        stars = stars + value
-        index +=1
-        value = clean_container[index]
+    certificate = container.find(
+        'span', class_='certificate'
+        ).text if container.find('span', class_='certificate') else None
 
-    votes = clean_container[38].replace(',', '')
+    imdb_rating = float (
+        container.find(
+        class_="inline-block ratings-imdb-rating"
+        ).find(
+            'strong'
+            ).text
+        )
+
+    metascore = int(
+        container.find(
+        'span', class_='metascore'
+        ).text
+    ) if container.find('span', class_='metascore') else None
+
+    description = container.find_all(
+        'p', class_='text-muted'
+        )[-1].text.replace('\n', '')
+
+    director_stars = container.find('p', class_='').text.split('|')
+
+    director = director_stars[0].replace('\n', '').replace('Director:', '').strip()
+    stars = director_stars[1].replace('\n', '').replace('Stars:', '').strip()
+
+    #Stores the text for votes and US gross value.
+    list_of_text_muted = [value.text for value in container.find_all('span', class_='text-muted')]
+
+    # Gets the tags for the votes and the gross
+    value_tags = container.find_all(attrs={'name':'nv'})
+
+    votes = None
+    gross = None
+
+    if 'Votes:' in list_of_text_muted:
+        votes = int(value_tags[0].text.replace(',', ''))
+
+    if 'Gross:' in list_of_text_muted:
+        # Gross income is in millions of USD.
+        gross = float(
+            value_tags[1].text.replace('$','').replace('M','')
+        )
+        gross
 
     cleaned_html = [
-        title, year_of_release, runtime, genre,
-        imdb_rating, metascore, description,
-        director, stars, votes
+        title, year, runtime, genre, certificate, 
+        imdb_rating, metascore, description, director, 
+        stars, votes, gross
     ]
 
     return cleaned_html
 
-def get_movie_info(movie_div):
+def get_movie_info(soup_list):
     '''
     Takes the movie data and puts it into a dictionary. 
     Returns that dictionary.
@@ -81,23 +140,28 @@ def get_movie_info(movie_div):
         'year_of_release':[],
         'runtime':[],
         'genre':[],
+        'film_rating':[],
         'imdb_rating':[],
         'metascore':[],
         'description':[],
         'director':[],
         'stars':[],
-        'votes':[]
+        'votes':[],
+        'us_gross':[]
     }
-
-    for container in movie_div:
-        data = clean_html(container)
-        for info, key in zip(data, movie_info):
-            movie_info[key].append(info)
+    for movie_page in soup_list:
+        for movie in movie_page:
+            data = clean_html(movie)
+            for info, key in zip(data, movie_info):
+                movie_info[key].append(info)
     
     return movie_info
 
+
 def main():
-    movie_info = get_movie_info(movie_div)
+    url_list = make_url()
+    soup_list = parse_html(url_list)
+    movie_info = get_movie_info(soup_list)
 
     df = pd.DataFrame(
         movie_info, 
@@ -106,12 +170,14 @@ def main():
             'year_of_release',
             'runtime',
             'genre',
+            'film_rating',
             'imdb_rating',
             'metascore',
             'description',
             'director',
             'stars',
-            'votes'
+            'votes',
+            'us_gross_M',
         ]
     )
 
